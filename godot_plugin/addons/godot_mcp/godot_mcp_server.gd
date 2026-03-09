@@ -554,7 +554,7 @@ func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
 		_send_response(client, 500, {"error": "Failed to open zip", "code": err})
 		return
 
-	var asset_dir := "res://assets/" + body["asset_name"]
+	var asset_dir: String = "res://assets/" + str(body["asset_name"])
 	DirAccess.make_dir_recursive_absolute(asset_dir)
 
 	var extracted_files := []
@@ -570,9 +570,9 @@ func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
 			dest_name = file_path.substr(slash_pos + 1)
 		if dest_name == "":
 			continue
-		var dest_path := asset_dir.path_join(dest_name)
+		var dest_path: String = asset_dir.path_join(dest_name)
 		# Ensure subdirectories exist
-		var dest_dir := dest_path.get_base_dir()
+		var dest_dir: String = dest_path.get_base_dir()
 		DirAccess.make_dir_recursive_absolute(dest_dir)
 		var out := FileAccess.open(dest_path, FileAccess.WRITE)
 		if out:
