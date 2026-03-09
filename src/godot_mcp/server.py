@@ -123,6 +123,34 @@ async def write_script(path: str, content: str) -> dict:
     })
 
 
+@mcp.tool()
+async def create_node(type: str, name: str = "", parent_path: str = "") -> dict:
+    """Create a new node in the current scene.
+
+    Args:
+        type: The Godot class name (e.g. "CharacterBody2D", "Sprite2D", "Label").
+        name: Optional name for the node. If empty, Godot assigns a default name.
+        parent_path: Path to the parent node. If empty, adds to the scene root.
+    """
+    return await _godot_request("/scene/node/create", method="POST", body={
+        "type": type,
+        "name": name,
+        "parent_path": parent_path,
+    })
+
+
+@mcp.tool()
+async def delete_node(node_path: str) -> dict:
+    """Delete a node from the current scene.
+
+    Args:
+        node_path: The node path in the scene tree (e.g. "Player/OldSprite").
+    """
+    return await _godot_request("/scene/node/delete", method="POST", body={
+        "node_path": node_path,
+    })
+
+
 def main():
     mcp.run(transport="stdio")
 

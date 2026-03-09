@@ -7,7 +7,7 @@ var http_server: GodotMCPServer
 func _enter_tree() -> void:
 	http_server = GodotMCPServer.new()
 	add_child(http_server)
-	print("[GodotMCP] Plugin enabled — HTTP server starting on port 8080")
+	print("[GodotMCP] Plugin enabled — HTTP server starting on port 6789")
 
 
 func _exit_tree() -> void:

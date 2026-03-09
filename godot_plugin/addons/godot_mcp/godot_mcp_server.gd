@@ -2,7 +2,7 @@
 class_name GodotMCPServer
 extends Node
 
-const PORT := 8080
+const PORT := 6789
 const MAX_BODY_SIZE := 1_048_576  # 1 MB
 
 var _tcp_server: TCPServer
@@ -125,6 +125,10 @@ func _route_request(client: StreamPeerTCP, method: String, path: String, query: 
 			_handle_read_script(client, query)
 		["POST", "/script/write"]:
 			_handle_write_script(client, body)
+		["POST", "/scene/node/create"]:
+			_handle_create_node(client, body)
+		["POST", "/scene/node/delete"]:
+			_handle_delete_node(client, body)
 		_:
 			_send_response(client, 404, {"error": "Not found", "path": path})
 
@@ -308,6 +312,72 @@ func _handle_write_script(client: StreamPeerTCP, body: Dictionary) -> void:
 
 	file.store_string(body["content"])
 	_send_response(client, 200, {"ok": true, "path": body["path"]})
+
+
+func _handle_create_node(client: StreamPeerTCP, body: Dictionary) -> void:
+	if not body.has("type"):
+		_send_response(client, 400, {"error": "Missing required field: type"})
+		return
+
+	var root := EditorInterface.get_edited_scene_root()
+	if not root:
+		_send_response(client, 404, {"error": "No scene open"})
+		return
+
+	# Find the parent node
+	var parent: Node = root
+	if body.has("parent_path") and body["parent_path"] != "":
+		parent = root.get_node_or_null(body["parent_path"])
+		if not parent:
+			_send_response(client, 404, {"error": "Parent node not found", "path": body["parent_path"]})
+			return
+
+	# Create the node by class name
+	var node: Node = ClassDB.instantiate(body["type"])
+	if not node:
+		_send_response(client, 400, {"error": "Unknown node type", "type": body["type"]})
+		return
+
+	# Set the name if provided
+	if body.has("name") and body["name"] != "":
+		node.name = body["name"]
+
+	parent.add_child(node)
+	node.owner = root
+
+	_send_response(client, 200, {
+		"ok": true,
+		"name": node.name,
+		"type": body["type"],
+		"path": str(node.get_path()),
+	})
+
+
+func _handle_delete_node(client: StreamPeerTCP, body: Dictionary) -> void:
+	if not body.has("node_path"):
+		_send_response(client, 400, {"error": "Missing required field: node_path"})
+		return
+
+	var root := EditorInterface.get_edited_scene_root()
+	if not root:
+		_send_response(client, 404, {"error": "No scene open"})
+		return
+
+	var node := root.get_node_or_null(body["node_path"])
+	if not node:
+		_send_response(client, 404, {"error": "Node not found", "path": body["node_path"]})
+		return
+
+	if node == root:
+		_send_response(client, 400, {"error": "Cannot delete the root node"})
+		return
+
+	var node_name := node.name
+	var node_path := str(node.get_path())
+	node.get_parent().remove_child(node)
+	node.queue_free()
+
+	_send_response(client, 200, {"ok": true, "deleted": node_path, "name": node_name})
 
 
 # ---- Response helpers ----
