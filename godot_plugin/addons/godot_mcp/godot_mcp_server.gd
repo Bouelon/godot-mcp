@@ -252,8 +252,7 @@ func _handle_execute_script(client: StreamPeerTCP, body: Dictionary) -> void:
 	var user_code: String = body["code"]
 
 	# Wrap user code in a GDScript class with a run() method
-	# that returns its result. Supports full GDScript: var, if, for, func, etc.
-	var source := "@tool\nextends RefCounted\n\nfunc run():\n"
+	var source := "@tool\nextends Node\n\nfunc run():\n"
 	for line in user_code.split("\n"):
 		source += "\t" + line + "\n"
 	# If the user code doesn't explicitly return, add a null return
@@ -267,8 +266,12 @@ func _handle_execute_script(client: StreamPeerTCP, body: Dictionary) -> void:
 		_send_response(client, 400, {"error": "Parse error", "code": err, "source": source})
 		return
 
-	var obj := script.new()
+	# Create the object and add it to the scene tree temporarily so it has access to the tree
+	var obj: Node = Node.new()
+	obj.set_script(script)
+	Engine.get_main_loop().root.add_child(obj)
 	var result = obj.run()
+	obj.queue_free()
 
 	_send_response(client, 200, {"ok": true, "result": _value_to_json(result)})
 
@@ -425,15 +428,29 @@ func _handle_delete_node(client: StreamPeerTCP, body: Dictionary) -> void:
 
 
 func _handle_viewport_screenshot(client: StreamPeerTCP) -> void:
-	var viewport := EditorInterface.get_editor_viewport_3d(0)
-	if not viewport:
-		# Fallback to the main editor viewport
-		viewport = EditorInterface.get_base_control().get_viewport()
-	if not viewport:
-		_send_response(client, 500, {"error": "Cannot access editor viewport"})
-		return
+	# Check if the edited scene is 2D or 3D
+	var edited_root := EditorInterface.get_edited_scene_root()
+	var is_2d := edited_root and (edited_root is Node2D or edited_root is Control)
 
-	var image := viewport.get_texture().get_image()
+	var image: Image = null
+
+	if is_2d:
+		# For 2D scenes, find the 2D editor SubViewport via the edited scene's viewport
+		var scene_viewport := edited_root.get_viewport()
+		if scene_viewport:
+			image = scene_viewport.get_texture().get_image()
+	else:
+		# For 3D scenes, use the 3D viewport
+		var viewport_3d := EditorInterface.get_editor_viewport_3d(0)
+		if viewport_3d:
+			image = viewport_3d.get_texture().get_image()
+
+	# Fallback: main editor viewport
+	if not image:
+		var main_vp := EditorInterface.get_base_control().get_viewport()
+		if main_vp:
+			image = main_vp.get_texture().get_image()
+
 	if not image:
 		_send_response(client, 500, {"error": "Failed to capture viewport image"})
 		return
