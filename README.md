@@ -10,7 +10,7 @@
 
 > Control the Godot 4 editor from Claude Code (or any MCP client) via the Model Context Protocol.
 
-**Godot MCP** is a bridge between AI assistants and the Godot 4 engine. It exposes 15 tools that let you inspect scenes, create nodes, modify properties, capture screenshots, and manage project files — all without leaving your terminal.
+**Godot MCP** is a bridge between AI assistants and the Godot 4 engine. It exposes 18 tools that let you inspect scenes, create nodes, modify properties, capture screenshots, and manage project files — all without leaving your terminal.
 
 ## Architecture
 
@@ -79,6 +79,9 @@ Add to your Claude Code MCP settings (`~/.claude.json` or project config):
 | `write_script` | Write or modify a GDScript file |
 | `get_viewport_screenshot` | Capture the editor viewport as base64 PNG |
 | `get_logs` | Get recent logs and errors from the Godot console |
+| `search_assets` | Search the Godot Asset Library |
+| `download_asset` | Download and install an asset from the Asset Library |
+| `preview_asset` | Preview an image file from the project as base64 PNG |
 
 ## Usage Example
 

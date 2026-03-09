@@ -147,6 +147,10 @@ func _route_request(client: StreamPeerTCP, method: String, path: String, query: 
 			_handle_viewport_screenshot(client)
 		["GET", "/editor/logs"]:
 			_handle_get_logs(client, query)
+		["POST", "/asset/install"]:
+			_handle_install_asset(client, body)
+		["GET", "/asset/preview"]:
+			_handle_preview_asset(client, query)
 		_:
 			_send_response(client, 404, {"error": "Not found", "path": path})
 
@@ -520,6 +524,112 @@ func _handle_get_logs(client: StreamPeerTCP, query: Dictionary) -> void:
 		"ok": true,
 		"count": entries.size(),
 		"logs": entries,
+	})
+
+
+func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
+	if not body.has("zip_base64") or not body.has("asset_name"):
+		_send_response(client, 400, {"error": "Missing required fields: zip_base64, asset_name"})
+		return
+
+	var zip_data := Marshalls.base64_to_raw(body["zip_base64"])
+	if zip_data.size() == 0:
+		_send_response(client, 400, {"error": "Invalid base64 data"})
+		return
+
+	# Save zip to a temp file
+	var tmp_path := "user://tmp_asset.zip"
+	var tmp_file := FileAccess.open(tmp_path, FileAccess.WRITE)
+	if not tmp_file:
+		_send_response(client, 500, {"error": "Cannot create temp file"})
+		return
+	tmp_file.store_buffer(zip_data)
+	tmp_file.close()
+
+	# Extract zip contents
+	var reader := ZIPReader.new()
+	var err := reader.open(tmp_path)
+	if err != OK:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_path))
+		_send_response(client, 500, {"error": "Failed to open zip", "code": err})
+		return
+
+	var asset_dir := "res://assets/" + body["asset_name"]
+	DirAccess.make_dir_recursive_absolute(asset_dir)
+
+	var extracted_files := []
+	for file_path in reader.get_files():
+		# Skip directories and hidden files
+		if file_path.ends_with("/") or file_path.begins_with("."):
+			continue
+		var content := reader.read_file(file_path)
+		# Strip the top-level directory from zip if present
+		var dest_name := file_path
+		var slash_pos := file_path.find("/")
+		if slash_pos >= 0:
+			dest_name = file_path.substr(slash_pos + 1)
+		if dest_name == "":
+			continue
+		var dest_path := asset_dir.path_join(dest_name)
+		# Ensure subdirectories exist
+		var dest_dir := dest_path.get_base_dir()
+		DirAccess.make_dir_recursive_absolute(dest_dir)
+		var out := FileAccess.open(dest_path, FileAccess.WRITE)
+		if out:
+			out.store_buffer(content)
+			extracted_files.append(dest_path)
+
+	reader.close()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_path))
+
+	# Refresh the filesystem so Godot sees the new files
+	EditorInterface.get_resource_filesystem().scan()
+
+	_send_response(client, 200, {
+		"ok": true,
+		"asset_name": body["asset_name"],
+		"directory": asset_dir,
+		"files": extracted_files,
+		"file_count": extracted_files.size(),
+	})
+
+
+func _handle_preview_asset(client: StreamPeerTCP, query: Dictionary) -> void:
+	if not query.has("path"):
+		_send_response(client, 400, {"error": "Missing 'path' parameter"})
+		return
+
+	var path: String = query["path"]
+	if not FileAccess.file_exists(path):
+		_send_response(client, 404, {"error": "File not found", "path": path})
+		return
+
+	var image := Image.new()
+	var err := image.load(path)
+	if err != OK:
+		_send_response(client, 400, {"error": "Cannot load image", "path": path, "code": err})
+		return
+
+	# Resize to max 512px on the longest side to save tokens
+	var max_size := 512
+	if image.get_width() > max_size or image.get_height() > max_size:
+		if image.get_width() >= image.get_height():
+			var new_h := int(float(image.get_height()) * max_size / image.get_width())
+			image.resize(max_size, new_h, Image.INTERPOLATE_LANCZOS)
+		else:
+			var new_w := int(float(image.get_width()) * max_size / image.get_height())
+			image.resize(new_w, max_size, Image.INTERPOLATE_LANCZOS)
+
+	var png_data := image.save_png_to_buffer()
+	var base64_str := Marshalls.raw_to_base64(png_data)
+
+	_send_response(client, 200, {
+		"ok": true,
+		"path": path,
+		"format": "png",
+		"width": image.get_width(),
+		"height": image.get_height(),
+		"data_base64": base64_str,
 	})
 
 

@@ -1,9 +1,11 @@
 """Godot MCP Server - Bridge between MCP clients and the Godot 4 editor plugin."""
 
+import base64
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 GODOT_HTTP_URL = "http://127.0.0.1:6789"
+ASSET_LIBRARY_URL = "https://godotengine.org/asset-library/api"
 
 mcp = FastMCP("godot-mcp", log_level="INFO")
 
@@ -182,6 +184,81 @@ async def get_logs(level: str = "", clear: bool = False) -> dict:
         params.append("clear=true")
     qs = f"?{'&'.join(params)}" if params else ""
     return await _godot_request(f"/editor/logs{qs}")
+
+
+@mcp.tool()
+async def search_assets(query: str, category: str = "", max_results: int = 10) -> dict:
+    """Search the Godot Asset Library for assets.
+
+    Args:
+        query: Search terms (e.g. "pixel art character", "platformer controller").
+        category: Optional category filter (e.g. "2D Tools", "Shaders", "Templates").
+        max_results: Maximum number of results to return (default: 10).
+    """
+    params = {"filter": query, "max_results": max_results}
+    if category:
+        params["category"] = category
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(f"{ASSET_LIBRARY_URL}/asset", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    results = []
+    for asset in data.get("result", [])[:max_results]:
+        results.append({
+            "id": asset.get("asset_id"),
+            "title": asset.get("title"),
+            "description": asset.get("description", ""),
+            "author": asset.get("author"),
+            "category": asset.get("category"),
+            "rating": asset.get("rating"),
+            "download_url": asset.get("download_url", ""),
+            "icon_url": asset.get("icon_url", ""),
+        })
+    return {"query": query, "count": len(results), "results": results}
+
+
+@mcp.tool()
+async def download_asset(asset_id: int) -> dict:
+    """Download and install an asset from the Godot Asset Library into the project.
+
+    Args:
+        asset_id: The asset ID from the Godot Asset Library (get it from search_assets).
+    """
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # Get asset details
+        resp = await client.get(f"{ASSET_LIBRARY_URL}/asset/{asset_id}")
+        resp.raise_for_status()
+        asset_info = resp.json()
+
+        title = asset_info.get("title", f"asset_{asset_id}")
+        download_url = asset_info.get("download_url", "")
+        if not download_url:
+            return {"error": "No download URL found for this asset"}
+
+        # Download the zip
+        zip_resp = await client.get(download_url)
+        zip_resp.raise_for_status()
+
+    # Send zip to Godot plugin for extraction
+    zip_b64 = base64.b64encode(zip_resp.content).decode("ascii")
+    # Clean asset name for filesystem
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "" for c in title).strip()
+    safe_name = safe_name.replace(" ", "_")
+
+    return await _godot_request("/asset/install", method="POST", body={
+        "zip_base64": zip_b64,
+        "asset_name": safe_name,
+    })
+
+
+@mcp.tool()
+async def preview_asset(path: str) -> dict:
+    """Preview an image file from the Godot project (png, jpg, svg). Returns base64 PNG resized to max 512px.
+
+    Args:
+        path: Path to the image in the project (e.g. "res://assets/icon.png").
+    """
+    return await _godot_request(f"/asset/preview?path={path}")
 
 
 def main():
