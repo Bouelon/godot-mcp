@@ -133,6 +133,8 @@ func _route_request(client: StreamPeerTCP, method: String, path: String, query: 
 			_handle_delete_node(client, body)
 		["GET", "/viewport/screenshot"]:
 			_handle_viewport_screenshot(client)
+		["GET", "/editor/screenshot"]:
+			_handle_viewport_screenshot(client)
 		_:
 			_send_response(client, 404, {"error": "Not found", "path": path})
 
