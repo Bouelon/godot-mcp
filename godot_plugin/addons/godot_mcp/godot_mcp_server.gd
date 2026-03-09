@@ -125,6 +125,8 @@ func _route_request(client: StreamPeerTCP, method: String, path: String, query: 
 			_handle_read_script(client, query)
 		["POST", "/script/write"]:
 			_handle_write_script(client, body)
+		["POST", "/scene/save"]:
+			_handle_save_scene(client, body)
 		["POST", "/scene/node/create"]:
 			_handle_create_node(client, body)
 		["POST", "/scene/node/delete"]:
@@ -312,6 +314,34 @@ func _handle_write_script(client: StreamPeerTCP, body: Dictionary) -> void:
 
 	file.store_string(body["content"])
 	_send_response(client, 200, {"ok": true, "path": body["path"]})
+
+
+func _handle_save_scene(client: StreamPeerTCP, body: Dictionary) -> void:
+	var root := EditorInterface.get_edited_scene_root()
+	if not root:
+		_send_response(client, 404, {"error": "No scene open"})
+		return
+
+	var scene := PackedScene.new()
+	var err := scene.pack(root)
+	if err != OK:
+		_send_response(client, 500, {"error": "Failed to pack scene", "code": err})
+		return
+
+	var save_path: String = root.scene_file_path
+	if body.has("path") and body["path"] != "":
+		save_path = body["path"]
+
+	if save_path == "":
+		_send_response(client, 400, {"error": "Scene has no file path. Provide a 'path' parameter."})
+		return
+
+	err = ResourceSaver.save(scene, save_path)
+	if err != OK:
+		_send_response(client, 500, {"error": "Failed to save scene", "code": err})
+		return
+
+	_send_response(client, 200, {"ok": true, "path": save_path})
 
 
 func _handle_create_node(client: StreamPeerTCP, body: Dictionary) -> void:

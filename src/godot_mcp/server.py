@@ -124,6 +124,16 @@ async def write_script(path: str, content: str) -> dict:
 
 
 @mcp.tool()
+async def save_scene(path: str = "") -> dict:
+    """Save the current scene to disk.
+
+    Args:
+        path: Optional file path (e.g. "res://scenes/level.tscn"). If empty, saves to the scene's existing path.
+    """
+    return await _godot_request("/scene/save", method="POST", body={"path": path})
+
+
+@mcp.tool()
 async def create_node(type: str, name: str = "", parent_path: str = "") -> dict:
     """Create a new node in the current scene.
 
