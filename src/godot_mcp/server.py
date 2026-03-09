@@ -167,6 +167,23 @@ async def get_viewport_screenshot() -> dict:
     return await _godot_request("/viewport/screenshot")
 
 
+@mcp.tool()
+async def get_logs(level: str = "", clear: bool = False) -> dict:
+    """Get recent log messages and errors from the Godot editor console.
+
+    Args:
+        level: Optional filter: "info", "warning", or "error". If empty, returns all levels.
+        clear: If true, clears the log buffer after reading.
+    """
+    params = []
+    if level:
+        params.append(f"level={level}")
+    if clear:
+        params.append("clear=true")
+    qs = f"?{'&'.join(params)}" if params else ""
+    return await _godot_request(f"/editor/logs{qs}")
+
+
 def main():
     mcp.run(transport="stdio")
 

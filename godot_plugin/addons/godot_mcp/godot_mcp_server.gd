@@ -5,8 +5,12 @@ extends Node
 const PORT := 6789
 const MAX_BODY_SIZE := 1_048_576  # 1 MB
 
+const MAX_LOG_ENTRIES := 100
+
 var _tcp_server: TCPServer
 var _clients: Array[StreamPeerTCP] = []
+var _log_buffer: Array[Dictionary] = []
+var _log_file_pos: int = 0
 
 
 func _ready() -> void:
@@ -15,6 +19,12 @@ func _ready() -> void:
 	if err != OK:
 		push_error("[GodotMCP] Failed to listen on port %d: %s" % [PORT, error_string(err)])
 		return
+	# Track the current end of the Godot log file so we only read new entries
+	var log_path := OS.get_user_data_dir().path_join("logs/godot.log")
+	var f := FileAccess.open(log_path, FileAccess.READ)
+	if f:
+		f.seek_end(0)
+		_log_file_pos = f.get_position()
 	print("[GodotMCP] HTTP server listening on 127.0.0.1:%d" % PORT)
 
 
@@ -135,6 +145,8 @@ func _route_request(client: StreamPeerTCP, method: String, path: String, query: 
 			_handle_viewport_screenshot(client)
 		["GET", "/editor/screenshot"]:
 			_handle_viewport_screenshot(client)
+		["GET", "/editor/logs"]:
+			_handle_get_logs(client, query)
 		_:
 			_send_response(client, 404, {"error": "Not found", "path": path})
 
@@ -464,6 +476,50 @@ func _handle_viewport_screenshot(client: StreamPeerTCP) -> void:
 		"width": image.get_width(),
 		"height": image.get_height(),
 		"data_base64": base64_str,
+	})
+
+
+func _handle_get_logs(client: StreamPeerTCP, query: Dictionary) -> void:
+	# Read new lines from Godot's log file since last check
+	var log_path := OS.get_user_data_dir().path_join("logs/godot.log")
+	var f := FileAccess.open(log_path, FileAccess.READ)
+	if f:
+		f.seek(_log_file_pos)
+		while f.get_position() < f.get_length():
+			var line := f.get_line()
+			if line.strip_edges() == "":
+				continue
+			var level := "info"
+			if "ERROR" in line or "error" in line:
+				level = "error"
+			elif "WARNING" in line or "warning" in line:
+				level = "warning"
+			_log_buffer.append({
+				"message": line,
+				"level": level,
+				"timestamp": Time.get_ticks_msec(),
+			})
+		_log_file_pos = f.get_position()
+
+	# Trim to MAX_LOG_ENTRIES
+	while _log_buffer.size() > MAX_LOG_ENTRIES:
+		_log_buffer.pop_front()
+
+	# Optional: filter by level
+	var filter_level: String = query.get("level", "")
+	var entries := []
+	for entry in _log_buffer:
+		if filter_level == "" or entry["level"] == filter_level:
+			entries.append(entry)
+
+	var clear: String = query.get("clear", "")
+	if clear == "true":
+		_log_buffer.clear()
+
+	_send_response(client, 200, {
+		"ok": true,
+		"count": entries.size(),
+		"logs": entries,
 	})
 
 
