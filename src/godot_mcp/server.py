@@ -186,14 +186,20 @@ async def get_logs(level: str = "", clear: bool = False) -> dict:
     return await _godot_request(f"/editor/logs{qs}")
 
 
+ASSET_CATEGORIES = {
+    "2d tools": "1", "3d tools": "2", "shaders": "3",
+    "materials": "4", "tools": "5", "scripts": "6", "misc": "7",
+}
+
+
 @mcp.tool()
 async def search_assets(query: str, godot_version: str = "4", category: str = "", page: int = 0, max_results: int = 10, sort: str = "rating") -> dict:
-    """Search the Godot Asset Library for assets.
+    """Search the Godot Asset Library for assets compatible with Godot 4.
 
     Args:
         query: Search terms (e.g. "pixel art character", "platformer controller").
         godot_version: Major Godot version filter (default: "4"). Use "3" for Godot 3.x assets.
-        category: Optional category filter (e.g. "2D Tools", "Shaders", "Templates").
+        category: Optional category filter: "2D Tools", "3D Tools", "Shaders", "Materials", "Tools", "Scripts", or "Misc".
         page: Page number for pagination (default: 0).
         max_results: Results per page (default: 10, max: 40).
         sort: Sort order: "rating", "name", "updated", or "cost" (default: "rating").
@@ -206,7 +212,8 @@ async def search_assets(query: str, godot_version: str = "4", category: str = ""
         "sort": sort,
     }
     if category:
-        params["category"] = category
+        cat_id = ASSET_CATEGORIES.get(category.lower(), category)
+        params["category"] = cat_id
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{ASSET_LIBRARY_URL}/asset", params=params)
         resp.raise_for_status()
@@ -218,15 +225,15 @@ async def search_assets(query: str, godot_version: str = "4", category: str = ""
         results.append({
             "id": asset.get("asset_id"),
             "title": asset.get("title"),
-            "description": asset.get("description", ""),
             "author": asset.get("author"),
             "category": asset.get("category"),
             "godot_version": asset.get("godot_version", ""),
             "rating": asset.get("rating"),
             "cost": asset.get("cost", ""),
             "support_level": asset.get("support_level", ""),
-            "download_url": asset.get("download_url", ""),
             "icon_url": asset.get("icon_url", ""),
+            "version_string": asset.get("version_string", ""),
+            "modify_date": asset.get("modify_date", ""),
         })
     return {
         "query": query,
