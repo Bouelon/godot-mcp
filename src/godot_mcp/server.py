@@ -161,6 +161,12 @@ async def delete_node(node_path: str) -> dict:
     })
 
 
+@mcp.tool()
+async def get_viewport_screenshot() -> dict:
+    """Capture a screenshot of the Godot editor viewport and return it as base64 PNG."""
+    return await _godot_request("/viewport/screenshot")
+
+
 def main():
     mcp.run(transport="stdio")
 

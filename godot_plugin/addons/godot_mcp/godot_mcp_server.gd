@@ -131,6 +131,8 @@ func _route_request(client: StreamPeerTCP, method: String, path: String, query: 
 			_handle_create_node(client, body)
 		["POST", "/scene/node/delete"]:
 			_handle_delete_node(client, body)
+		["GET", "/viewport/screenshot"]:
+			_handle_viewport_screenshot(client)
 		_:
 			_send_response(client, 404, {"error": "Not found", "path": path})
 
@@ -408,6 +410,32 @@ func _handle_delete_node(client: StreamPeerTCP, body: Dictionary) -> void:
 	node.queue_free()
 
 	_send_response(client, 200, {"ok": true, "deleted": node_path, "name": node_name})
+
+
+func _handle_viewport_screenshot(client: StreamPeerTCP) -> void:
+	var viewport := EditorInterface.get_editor_viewport_3d(0)
+	if not viewport:
+		# Fallback to the main editor viewport
+		viewport = EditorInterface.get_base_control().get_viewport()
+	if not viewport:
+		_send_response(client, 500, {"error": "Cannot access editor viewport"})
+		return
+
+	var image := viewport.get_texture().get_image()
+	if not image:
+		_send_response(client, 500, {"error": "Failed to capture viewport image"})
+		return
+
+	var png_data := image.save_png_to_buffer()
+	var base64_str := Marshalls.raw_to_base64(png_data)
+
+	_send_response(client, 200, {
+		"ok": true,
+		"format": "png",
+		"width": image.get_width(),
+		"height": image.get_height(),
+		"data_base64": base64_str,
+	})
 
 
 # ---- Response helpers ----
