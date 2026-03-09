@@ -249,16 +249,26 @@ func _handle_execute_script(client: StreamPeerTCP, body: Dictionary) -> void:
 		_send_response(client, 400, {"error": "Missing 'code' field"})
 		return
 
-	var expression := Expression.new()
-	var err := expression.parse(body["code"])
+	var user_code: String = body["code"]
+
+	# Wrap user code in a GDScript class with a run() method
+	# that returns its result. Supports full GDScript: var, if, for, func, etc.
+	var source := "@tool\nextends RefCounted\n\nfunc run():\n"
+	for line in user_code.split("\n"):
+		source += "\t" + line + "\n"
+	# If the user code doesn't explicitly return, add a null return
+	if not "\treturn" in source:
+		source += "\treturn null\n"
+
+	var script := GDScript.new()
+	script.source_code = source
+	var err := script.reload()
 	if err != OK:
-		_send_response(client, 400, {"error": "Parse error", "message": expression.get_error_text()})
+		_send_response(client, 400, {"error": "Parse error", "code": err, "source": source})
 		return
 
-	var result = expression.execute()
-	if expression.has_execute_failed():
-		_send_response(client, 500, {"error": "Execution failed", "message": expression.get_error_text()})
-		return
+	var obj := script.new()
+	var result = obj.run()
 
 	_send_response(client, 200, {"ok": true, "result": _value_to_json(result)})
 
