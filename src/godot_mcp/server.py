@@ -187,34 +187,56 @@ async def get_logs(level: str = "", clear: bool = False) -> dict:
 
 
 @mcp.tool()
-async def search_assets(query: str, category: str = "", max_results: int = 10) -> dict:
+async def search_assets(query: str, godot_version: str = "4", category: str = "", page: int = 0, max_results: int = 10, sort: str = "rating") -> dict:
     """Search the Godot Asset Library for assets.
 
     Args:
         query: Search terms (e.g. "pixel art character", "platformer controller").
+        godot_version: Major Godot version filter (default: "4"). Use "3" for Godot 3.x assets.
         category: Optional category filter (e.g. "2D Tools", "Shaders", "Templates").
-        max_results: Maximum number of results to return (default: 10).
+        page: Page number for pagination (default: 0).
+        max_results: Results per page (default: 10, max: 40).
+        sort: Sort order: "rating", "name", "updated", or "cost" (default: "rating").
     """
-    params = {"filter": query, "max_results": max_results}
+    params = {
+        "filter": query,
+        "godot_version": godot_version,
+        "max_results": min(max_results, 40),
+        "page": page,
+        "sort": sort,
+    }
     if category:
         params["category"] = category
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{ASSET_LIBRARY_URL}/asset", params=params)
         resp.raise_for_status()
         data = resp.json()
+    total_pages = data.get("pages", 1)
+    total_items = data.get("total_items", 0)
     results = []
-    for asset in data.get("result", [])[:max_results]:
+    for asset in data.get("result", []):
         results.append({
             "id": asset.get("asset_id"),
             "title": asset.get("title"),
             "description": asset.get("description", ""),
             "author": asset.get("author"),
             "category": asset.get("category"),
+            "godot_version": asset.get("godot_version", ""),
             "rating": asset.get("rating"),
+            "cost": asset.get("cost", ""),
+            "support_level": asset.get("support_level", ""),
             "download_url": asset.get("download_url", ""),
             "icon_url": asset.get("icon_url", ""),
         })
-    return {"query": query, "count": len(results), "results": results}
+    return {
+        "query": query,
+        "godot_version": godot_version,
+        "page": page,
+        "total_pages": total_pages,
+        "total_items": total_items,
+        "count": len(results),
+        "results": results,
+    }
 
 
 @mcp.tool()
