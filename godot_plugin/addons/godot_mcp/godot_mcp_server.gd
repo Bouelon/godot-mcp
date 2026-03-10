@@ -5,12 +5,14 @@ extends Node
 const PORT := 6789
 const MAX_BODY_SIZE := 1_048_576  # 1 MB
 
-const MAX_LOG_ENTRIES := 100
+const MAX_LOG_ENTRIES := 200
 
 var _tcp_server: TCPServer
 var _clients: Array[StreamPeerTCP] = []
 var _log_buffer: Array[Dictionary] = []
 var _log_file_pos: int = 0
+var _error_buffer: Array[Dictionary] = []
+var debug_capture: MCPDebugCapture
 
 
 func _ready() -> void:
@@ -19,13 +21,82 @@ func _ready() -> void:
 	if err != OK:
 		push_error("[GodotMCP] Failed to listen on port %d: %s" % [PORT, error_string(err)])
 		return
-	# Track the current end of the Godot log file so we only read new entries
-	var log_path := OS.get_user_data_dir().path_join("logs/godot.log")
-	var f := FileAccess.open(log_path, FileAccess.READ)
-	if f:
-		f.seek_end(0)
-		_log_file_pos = f.get_position()
+	# Read the ENTIRE log file on startup to capture existing errors
+	_read_full_log()
 	print("[GodotMCP] HTTP server listening on 127.0.0.1:%d" % PORT)
+
+
+func _read_full_log() -> void:
+	var log_path := _get_log_path()
+	if log_path == "":
+		return
+	var f := FileAccess.open(log_path, FileAccess.READ)
+	if not f:
+		return
+	# Read all existing content and parse for errors
+	while f.get_position() < f.get_length():
+		var line := f.get_line()
+		_parse_log_line(line)
+	_log_file_pos = f.get_position()
+
+
+func _get_log_path() -> String:
+	# Try the standard Godot log path
+	var log_path := OS.get_user_data_dir().path_join("logs/godot.log")
+	if FileAccess.file_exists(log_path):
+		return log_path
+	# Try alternative paths
+	var alt_paths := [
+		OS.get_user_data_dir().path_join("logs/editor.log"),
+		OS.get_user_data_dir().path_join("godot.log"),
+	]
+	for path in alt_paths:
+		if FileAccess.file_exists(path):
+			return path
+	return log_path  # Return default even if not found yet
+
+
+func _parse_log_line(line: String) -> void:
+	if line.strip_edges() == "":
+		return
+	var level := "info"
+	var is_error := false
+	# Godot error format detection
+	if line.begins_with("ERROR:") or line.begins_with("  E ") or "ERROR" in line.to_upper():
+		level = "error"
+		is_error = true
+	elif line.begins_with("WARNING:") or line.begins_with("  W ") or "WARNING" in line.to_upper():
+		level = "warning"
+	elif line.begins_with("USER ERROR:") or line.begins_with("USER WARNING:"):
+		level = "error" if "ERROR" in line else "warning"
+	# GDScript error patterns
+	elif "Parse Error" in line or "parse error" in line:
+		level = "error"
+		is_error = true
+	elif "Cannot" in line and ("find" in line or "use" in line or "load" in line):
+		level = "error"
+		is_error = true
+	elif "Failed" in line:
+		level = "error"
+		is_error = true
+	elif "Condition" in line and "is true" in line:
+		level = "error"
+		is_error = true
+	
+	var entry := {
+		"message": line,
+		"level": level,
+		"timestamp": Time.get_ticks_msec(),
+	}
+	_log_buffer.append(entry)
+	if is_error:
+		_error_buffer.append(entry)
+	
+	# Keep buffers in check
+	while _log_buffer.size() > MAX_LOG_ENTRIES:
+		_log_buffer.pop_front()
+	while _error_buffer.size() > MAX_LOG_ENTRIES:
+		_error_buffer.pop_front()
 
 
 func stop() -> void:
@@ -147,6 +218,12 @@ func _route_request(client: StreamPeerTCP, method: String, path: String, query: 
 			_handle_viewport_screenshot(client)
 		["GET", "/editor/logs"]:
 			_handle_get_logs(client, query)
+		["GET", "/editor/errors"]:
+			_handle_get_errors(client, query)
+		["POST", "/script/check"]:
+			_handle_check_script(client, body)
+		["GET", "/editor/debugger"]:
+			_handle_get_debugger(client, query)
 		["POST", "/asset/install"]:
 			_handle_install_asset(client, body)
 		["GET", "/asset/preview"]:
@@ -267,11 +344,9 @@ func _handle_execute_script(client: StreamPeerTCP, body: Dictionary) -> void:
 
 	var user_code: String = body["code"]
 
-	# Wrap user code in a GDScript class with a run() method
 	var source := "@tool\nextends Node\n\nfunc run():\n"
 	for line in user_code.split("\n"):
 		source += "\t" + line + "\n"
-	# If the user code doesn't explicitly return, add a null return
 	if not "\treturn" in source:
 		source += "\treturn null\n"
 
@@ -282,7 +357,6 @@ func _handle_execute_script(client: StreamPeerTCP, body: Dictionary) -> void:
 		_send_response(client, 400, {"error": "Parse error", "code": err, "source": source})
 		return
 
-	# Create the object and add it to the scene tree temporarily so it has access to the tree
 	var obj: Node = Node.new()
 	obj.set_script(script)
 	Engine.get_main_loop().root.add_child(obj)
@@ -387,7 +461,6 @@ func _handle_create_node(client: StreamPeerTCP, body: Dictionary) -> void:
 		_send_response(client, 404, {"error": "No scene open"})
 		return
 
-	# Find the parent node
 	var parent: Node = root
 	if body.has("parent_path") and body["parent_path"] != "":
 		parent = root.get_node_or_null(body["parent_path"])
@@ -395,13 +468,11 @@ func _handle_create_node(client: StreamPeerTCP, body: Dictionary) -> void:
 			_send_response(client, 404, {"error": "Parent node not found", "path": body["parent_path"]})
 			return
 
-	# Create the node by class name
 	var node: Node = ClassDB.instantiate(body["type"])
 	if not node:
 		_send_response(client, 400, {"error": "Unknown node type", "type": body["type"]})
 		return
 
-	# Set the name if provided
 	if body.has("name") and body["name"] != "":
 		node.name = body["name"]
 
@@ -444,24 +515,20 @@ func _handle_delete_node(client: StreamPeerTCP, body: Dictionary) -> void:
 
 
 func _handle_viewport_screenshot(client: StreamPeerTCP) -> void:
-	# Check if the edited scene is 2D or 3D
 	var edited_root := EditorInterface.get_edited_scene_root()
 	var is_2d := edited_root and (edited_root is Node2D or edited_root is Control)
 
 	var image: Image = null
 
 	if is_2d:
-		# For 2D scenes, find the 2D editor SubViewport via the edited scene's viewport
 		var scene_viewport := edited_root.get_viewport()
 		if scene_viewport:
 			image = scene_viewport.get_texture().get_image()
 	else:
-		# For 3D scenes, use the 3D viewport
 		var viewport_3d := EditorInterface.get_editor_viewport_3d(0)
 		if viewport_3d:
 			image = viewport_3d.get_texture().get_image()
 
-	# Fallback: main editor viewport
 	if not image:
 		var main_vp := EditorInterface.get_base_control().get_viewport()
 		if main_vp:
@@ -485,29 +552,14 @@ func _handle_viewport_screenshot(client: StreamPeerTCP) -> void:
 
 func _handle_get_logs(client: StreamPeerTCP, query: Dictionary) -> void:
 	# Read new lines from Godot's log file since last check
-	var log_path := OS.get_user_data_dir().path_join("logs/godot.log")
+	var log_path := _get_log_path()
 	var f := FileAccess.open(log_path, FileAccess.READ)
 	if f:
 		f.seek(_log_file_pos)
 		while f.get_position() < f.get_length():
 			var line := f.get_line()
-			if line.strip_edges() == "":
-				continue
-			var level := "info"
-			if "ERROR" in line or "error" in line:
-				level = "error"
-			elif "WARNING" in line or "warning" in line:
-				level = "warning"
-			_log_buffer.append({
-				"message": line,
-				"level": level,
-				"timestamp": Time.get_ticks_msec(),
-			})
+			_parse_log_line(line)
 		_log_file_pos = f.get_position()
-
-	# Trim to MAX_LOG_ENTRIES
-	while _log_buffer.size() > MAX_LOG_ENTRIES:
-		_log_buffer.pop_front()
 
 	# Optional: filter by level
 	var filter_level: String = query.get("level", "")
@@ -516,15 +568,121 @@ func _handle_get_logs(client: StreamPeerTCP, query: Dictionary) -> void:
 		if filter_level == "" or entry["level"] == filter_level:
 			entries.append(entry)
 
+	# Also include runtime debugger messages
+	var debugger_entries := []
+	if debug_capture:
+		for msg in debug_capture.get_messages(filter_level):
+			var text = msg["message"]
+			if msg["data"].size() > 0:
+				text += ": " + " | ".join(msg["data"])
+			debugger_entries.append({
+				"message": text,
+				"level": msg["level"],
+				"timestamp": msg["timestamp"],
+				"source": "debugger",
+			})
+
 	var clear: String = query.get("clear", "")
 	if clear == "true":
 		_log_buffer.clear()
+		if debug_capture:
+			debug_capture.get_messages("", true)
+
+	var all_entries := entries + debugger_entries
+	_send_response(client, 200, {
+		"ok": true,
+		"count": all_entries.size(),
+		"logs": all_entries,
+	})
+
+
+func _handle_get_errors(client: StreamPeerTCP, query: Dictionary) -> void:
+	# First refresh from log file
+	var log_path := _get_log_path()
+	var f := FileAccess.open(log_path, FileAccess.READ)
+	if f:
+		f.seek(_log_file_pos)
+		while f.get_position() < f.get_length():
+			var line := f.get_line()
+			_parse_log_line(line)
+		_log_file_pos = f.get_position()
+
+	var clear: String = query.get("clear", "")
+	
+	# Return only errors and warnings
+	var errors := []
+	for entry in _log_buffer:
+		if entry["level"] == "error" or entry["level"] == "warning":
+			errors.append(entry)
+	
+	if clear == "true":
+		_error_buffer.clear()
+		# Also clear errors from log buffer
+		var new_buffer: Array[Dictionary] = []
+		for entry in _log_buffer:
+			if entry["level"] == "info":
+				new_buffer.append(entry)
+		_log_buffer = new_buffer
 
 	_send_response(client, 200, {
 		"ok": true,
-		"count": entries.size(),
-		"logs": entries,
+		"count": errors.size(),
+		"errors": errors,
+		"log_path": log_path,
 	})
+
+
+func _handle_get_debugger(client: StreamPeerTCP, query: Dictionary) -> void:
+	if not debug_capture:
+		_send_response(client, 500, {"error": "Debug capture not available"})
+		return
+	var level_filter: String = query.get("level", "")
+	var clear: bool = query.get("clear", "") == "true"
+	var messages = debug_capture.get_messages(level_filter, clear)
+	_send_response(client, 200, {
+		"ok": true,
+		"count": messages.size(),
+		"messages": messages,
+	})
+
+
+func _handle_check_script(client: StreamPeerTCP, body: Dictionary) -> void:
+	# Validate a GDScript file for syntax errors
+	if not body.has("path"):
+		_send_response(client, 400, {"error": "Missing 'path' field"})
+		return
+	
+	var script_path: String = body["path"]
+	if not FileAccess.file_exists(script_path):
+		_send_response(client, 404, {"error": "Script not found", "path": script_path})
+		return
+	
+	var file := FileAccess.open(script_path, FileAccess.READ)
+	if not file:
+		_send_response(client, 500, {"error": "Cannot read script", "path": script_path})
+		return
+	
+	var source := file.get_as_text()
+	
+	# Try to compile the script
+	var script := GDScript.new()
+	script.source_code = source
+	var err := script.reload()
+	
+	if err != OK:
+		_send_response(client, 200, {
+			"ok": false,
+			"path": script_path,
+			"valid": false,
+			"error_code": err,
+			"error_string": error_string(err),
+		})
+	else:
+		_send_response(client, 200, {
+			"ok": true,
+			"path": script_path,
+			"valid": true,
+		})
 
 
 func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
@@ -537,7 +695,6 @@ func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
 		_send_response(client, 400, {"error": "Invalid base64 data"})
 		return
 
-	# Save zip to a temp file
 	var tmp_path := "user://tmp_asset.zip"
 	var tmp_file := FileAccess.open(tmp_path, FileAccess.WRITE)
 	if not tmp_file:
@@ -546,7 +703,6 @@ func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
 	tmp_file.store_buffer(zip_data)
 	tmp_file.close()
 
-	# Extract zip contents
 	var reader := ZIPReader.new()
 	var err := reader.open(tmp_path)
 	if err != OK:
@@ -559,11 +715,9 @@ func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
 
 	var extracted_files := []
 	for file_path in reader.get_files():
-		# Skip directories and hidden files
 		if file_path.ends_with("/") or file_path.begins_with("."):
 			continue
 		var content := reader.read_file(file_path)
-		# Strip the top-level directory from zip if present
 		var dest_name := file_path
 		var slash_pos := file_path.find("/")
 		if slash_pos >= 0:
@@ -571,7 +725,6 @@ func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
 		if dest_name == "":
 			continue
 		var dest_path: String = asset_dir.path_join(dest_name)
-		# Ensure subdirectories exist
 		var dest_dir: String = dest_path.get_base_dir()
 		DirAccess.make_dir_recursive_absolute(dest_dir)
 		var out := FileAccess.open(dest_path, FileAccess.WRITE)
@@ -582,7 +735,6 @@ func _handle_install_asset(client: StreamPeerTCP, body: Dictionary) -> void:
 	reader.close()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_path))
 
-	# Refresh the filesystem so Godot sees the new files
 	EditorInterface.get_resource_filesystem().scan()
 
 	_send_response(client, 200, {
@@ -610,7 +762,6 @@ func _handle_preview_asset(client: StreamPeerTCP, query: Dictionary) -> void:
 		_send_response(client, 400, {"error": "Cannot load image", "path": path, "code": err})
 		return
 
-	# Resize to max 512px on the longest side to save tokens
 	var max_size := 512
 	if image.get_width() > max_size or image.get_height() > max_size:
 		if image.get_width() >= image.get_height():
