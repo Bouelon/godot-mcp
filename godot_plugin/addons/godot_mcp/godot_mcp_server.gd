@@ -12,7 +12,7 @@ var _clients: Array[StreamPeerTCP] = []
 var _log_buffer: Array[Dictionary] = []
 var _log_file_pos: int = 0
 var _error_buffer: Array[Dictionary] = []
-var debug_capture: MCPDebugCapture
+var debug_capture: Node
 
 
 func _ready() -> void:

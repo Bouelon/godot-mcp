@@ -10,7 +10,7 @@
 
 > Control the Godot 4 editor from Claude Code (or any MCP client) via the Model Context Protocol.
 
-**Godot MCP** is a bridge between AI assistants and the Godot 4 engine. It exposes 18 tools that let you inspect scenes, create nodes, modify properties, capture screenshots, and manage project files — all without leaving your terminal.
+**Godot MCP** is a bridge between AI assistants and the Godot 4 engine. It exposes 18 MCP tools + 3 editor-side endpoints that let you inspect scenes, create nodes, modify properties, capture screenshots, debug scripts, and manage project files — all without leaving your terminal.
 
 ## Architecture
 
@@ -83,6 +83,16 @@ Add to your Claude Code MCP settings (`~/.claude.json` or project config):
 | `download_asset` | Download and install an asset from the Asset Library |
 | `preview_asset` | Preview an image file from the project as base64 PNG |
 
+### Editor-Side Endpoints (GDScript plugin)
+
+These endpoints are available directly on the Godot HTTP server and can be accessed by the MCP tools internally:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /editor/errors` | Get filtered error messages from the editor error buffer |
+| `POST /script/check` | Validate GDScript syntax without executing it |
+| `GET /editor/debugger` | Get runtime debugger messages via MCPDebugCapture |
+
 ## Usage Example
 
 Once both the Godot plugin is enabled and Claude Code is configured, you can interact with your Godot project naturally:
@@ -99,6 +109,12 @@ Claude: [calls run_scene] → launches the scene in Godot
 
 You: "Create a new script that makes the player jump"
 Claude: [calls write_script("res://scripts/player.gd", "...GDScript code...")]
+
+You: "Check my script for syntax errors"
+Claude: [calls execute_script via /script/check] → returns compilation errors if any
+
+You: "Show me the recent errors"
+Claude: [calls get_logs(level="error")] → returns filtered error messages
 ```
 
 ## Requirements
@@ -113,11 +129,11 @@ Claude: [calls write_script("res://scripts/player.gd", "...GDScript code...")]
 godot-mcp/
 ├── src/godot_mcp/
 │   ├── __init__.py
-│   └── server.py            # MCP server (10 tools)
+│   └── server.py            # MCP server (18 tools)
 ├── godot_plugin/addons/godot_mcp/
 │   ├── plugin.cfg            # Plugin metadata
 │   ├── plugin.gd             # Plugin entry point
-│   └── godot_mcp_server.gd   # HTTP server (GDScript)
+│   └── godot_mcp_server.gd   # HTTP server + error tracking + debug capture
 └── pyproject.toml
 ```
 
